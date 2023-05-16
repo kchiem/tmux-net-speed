@@ -1,4 +1,4 @@
-#!/bin/bash -
+#!/usr/bin/env bash
 
 ##
 # Varialbes
@@ -87,12 +87,22 @@ write_file()
 
 get_interfaces()
 {
+    local os=${1:-$(os_type)}
     local interfaces=$(get_tmux_option @net_speed_interfaces "")
 
     if [[ -z "$interfaces" ]] ; then
-        for interface in /sys/class/net/*; do
-            interfaces+=$(echo $(basename $interface) " ");
-        done
+        case $os in
+	    freebsd|osx)
+		for interface in $(ifconfig -l); do
+		    interfaces+="$interface "
+		done
+		;;
+	    linux)
+        	for interface in /sys/class/net/*; do
+            	    interfaces+=$(echo $(basename $interface) " ");
+        	done
+		;;
+	esac
     fi
 
     # Do not quote the variable. This way will handle trailing whitespace
@@ -102,15 +112,23 @@ get_interfaces()
 sum_speed()
 {
     local column=$1
+    local os=$(os_type)
 
-    declare -a interfaces=$(get_interfaces)
+    declare -a interfaces=$(get_interfaces $os)
 
     local line=""
     local val=0
     for intf in ${interfaces[@]} ; do
-        line=$(cat /proc/net/dev | grep "$intf" | cut -d':' -f 2)
-        speed="$(echo -n $line | cut -d' ' -f $column)"
-        let val+=${speed:=0}
+	case $os in
+	    freebsd|osx)
+		line=( $(netstat -I "$intf" -ibn | grep 'Link#' | awk '{ print $(NF-4), $(NF-1) }') )
+		;;
+	    linux)
+		line=( $(cat /proc/net/dev | grep "$intf" | cut -d':' -f 2 | awk '{ print $1, $9 }') )
+		;;
+	esac
+	speed=${line[$column]}
+	let val+=${speed:=0}
     done
 
     echo $val
@@ -128,3 +146,25 @@ command_exists() {
     local command="$1"
     type "$command" >/dev/null 2>&1
 }
+
+os_type() {
+    local os_name="unknown"
+
+    case $(uname | tr '[:upper:]' '[:lower:]') in
+      linux*)
+        os_name="linux"
+        ;;
+      darwin*)
+        os_name="osx"
+        ;;
+      msys*)
+        os_name="windows"
+        ;;
+      freebsd*)
+        os_name="freebsd"
+        ;;
+    esac
+  
+    echo -n $os_name
+}
+
