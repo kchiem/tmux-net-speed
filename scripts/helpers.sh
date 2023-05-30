@@ -3,8 +3,9 @@
 ##
 # Varialbes
 ##
-DOWNLOAD_FILE="/tmp/tmux_net_speed.download"
-UPLOAD_FILE="/tmp/tmux_net_speed.upload"
+LAST_FILE="/tmp/tmux_net_speed.last"
+_last=()
+_current=()
 
 get_tmux_option() {
     local option=$1
@@ -28,12 +29,12 @@ get_velocity()
 {
     local new_value=$1
     local old_value=$2
+    local interval=${3:-$(get_tmux_option 'status-interval' 5)}
 
     # Consts
     local THOUSAND=1024
     local MILLION=1048576
 
-    local interval=$(get_tmux_option 'status-interval' 5)
     local vel=$(( ( new_value - old_value ) / interval ))
     local vel_kb=$(( vel / THOUSAND ))
     local vel_mb=$(( vel / MILLION ))
@@ -111,13 +112,12 @@ get_interfaces()
 
 sum_speed()
 {
-    local column=$1
     local os=$(os_type)
+    local down_total=0
+    local up_total=0
 
     declare -a interfaces=$(get_interfaces $os)
 
-    local line=""
-    local val=0
     for intf in ${interfaces[@]} ; do
 	case $os in
 	    freebsd|osx)
@@ -126,12 +126,47 @@ sum_speed()
 	    linux)
 		line=( $(cat /proc/net/dev | grep "$intf" | cut -d':' -f 2 | awk '{ print $1, $9 }') )
 		;;
-	esac
-	speed=${line[$column]}
-	let val+=${speed:=0}
+	    esac
+	let down_total+=${line[0]}
+	let up_total+=${line[1]}
     done
 
-    echo $val
+    echo $down_total $up_total
+}
+
+# 1 - download, 2 - upload
+get_speed()
+{
+    local column=$1
+    local subprocess=${2:-0}
+    local interval=$(get_tmux_option 'status-interval' 5)
+    local now=$(date +%s)
+
+    # timestamp download_cumulative upload_cumulative
+    local last=( "${_last[@]}" )
+    if [ ${#last[@]} -eq 0 ]; then
+	last=( $(read_file "$LAST_FILE" "$now 0 0") )
+	_last=( "${last[@]}" )
+    fi
+    # protect against division by 0
+    if [[ $last -eq $now ]]; then sleep 1; now=$(date +%s); fi
+    local current=( "${_current[@]}" )
+    if [ ${#current[@]} -eq 0 ]; then
+	current=( $now $(sum_speed) )
+	_current=( "${current[@]}" )
+    fi
+    local delta_t=$(( $current - $last ))
+    local speed=$(get_velocity ${current[$column]} ${last[$column]} $delta_t)
+
+    if [[ $subprocess -eq 0 ]] && [[ $((${last[0]}+$interval)) -le $now ]]; then
+	function update_last()
+	{
+	    write_file "$LAST_FILE" "${_current[*]}"
+	}
+	trap update_last EXIT
+    fi
+
+    echo $speed
 }
 
 is_osx() {
